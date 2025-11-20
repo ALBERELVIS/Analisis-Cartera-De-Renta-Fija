@@ -72,10 +72,10 @@ def get_alive_bonds_at_date(
     try:
         precios_fecha = precios_df[fecha]
         bonos_con_precio = precios_fecha.dropna().index
+        # Los ISINs ya deberían estar limpios (sin " Corp") si se cargaron con load_historical_prices_universe
         # Asegurar que los índices sean strings para comparación
         bonos_con_precio = pd.Index([str(x) for x in bonos_con_precio])
     except Exception as e:
-        print(f"Error obteniendo precios en fecha {fecha}: {e}")
         return pd.Index([])
     
     # Filtrar por maturity (bonos vivos)
@@ -91,6 +91,7 @@ def get_alive_bonds_at_date(
     
     if 'Maturity' in universo_copy.columns:
         universo_copy['Maturity'] = pd.to_datetime(universo_copy['Maturity'], errors='coerce')
+        # Filtrar bonos vivos: maturity debe ser posterior a la fecha
         bonos_vivos = universo_copy[universo_copy['Maturity'] > fecha].copy()
         
         # Obtener ISINs de bonos vivos y convertir a string para comparación
@@ -213,6 +214,9 @@ def backtest_equally_weighted_portfolio(
     initial_value = 100.0
     current_value = initial_value
     
+    # Guardar valor inicial en la primera fecha
+    portfolio_value[rebalance_dates[0]] = initial_value
+    
     # Preparar universo con ISIN como índice si no lo está
     if 'ISIN' in universo_df.columns:
         try:
@@ -261,6 +265,9 @@ def backtest_equally_weighted_portfolio(
         holdings = pd.Series(weight_per_bond, index=alive_isins)
         portfolio_holdings[rebalance_date] = holdings
         
+        # Guardar valor de la cartera en esta fecha de rebalanceo
+        portfolio_value[rebalance_date] = current_value
+        
         # Si no es la última fecha, calcular valor hasta siguiente rebalanceo
         if i < len(rebalance_dates) - 1:
             next_rebalance = rebalance_dates[i + 1]
@@ -269,39 +276,63 @@ def backtest_equally_weighted_portfolio(
             fecha_actual = rebalance_date
             fecha_siguiente = next_rebalance
             
-            # Obtener precios en fecha actual
+            # Obtener precios en fecha actual (usar los mismos bonos que en rebalanceo)
+            # Primero intentar con la fecha exacta de rebalanceo
+            fecha_actual_work = fecha_actual
             try:
-                precios_actual = precios_df.loc[alive_isins, fecha_actual]
-            except KeyError:
+                precios_actual = precios_df.loc[alive_isins, fecha_actual_work]
+            except (KeyError, IndexError):
+                # Si la fecha no existe, buscar fecha más cercana anterior o igual
                 available_dates = [d for d in precios_df.columns if pd.notna(d) and d <= fecha_actual]
                 if len(available_dates) == 0:
-                    portfolio_value[rebalance_date] = current_value
+                    # Si no hay fechas disponibles, mantener valor
+                    portfolio_value[next_rebalance] = current_value
                     continue
-                fecha_actual = max(available_dates)
-                precios_actual = precios_df.loc[alive_isins, fecha_actual]
+                fecha_actual_work = max(available_dates)
+                try:
+                    precios_actual = precios_df.loc[alive_isins, fecha_actual_work]
+                except (KeyError, IndexError):
+                    portfolio_value[next_rebalance] = current_value
+                    continue
             
             # Obtener precios en fecha siguiente
-            if fecha_siguiente in precios_df.columns:
-                precios_siguiente = precios_df.loc[alive_isins, fecha_siguiente]
-            else:
-                # Buscar fecha más cercana disponible
-                available_dates = [d for d in precios_df.columns if pd.notna(d) and fecha_actual < d <= fecha_siguiente]
-                if len(available_dates) == 0:
-                    portfolio_value[rebalance_date] = current_value
-                    continue
-                fecha_siguiente = min(available_dates)
-                precios_siguiente = precios_df.loc[alive_isins, fecha_siguiente]
+            fecha_siguiente_work = fecha_siguiente
+            try:
+                if fecha_siguiente_work in precios_df.columns:
+                    precios_siguiente = precios_df.loc[alive_isins, fecha_siguiente_work]
+                else:
+                    # Buscar fecha más cercana disponible (puede ser igual o anterior a fecha_siguiente)
+                    available_dates = [d for d in precios_df.columns if pd.notna(d) and fecha_actual_work < d]
+                    if len(available_dates) == 0:
+                        portfolio_value[next_rebalance] = current_value
+                        continue
+                    # Buscar la fecha más cercana a fecha_siguiente pero después de fecha_actual
+                    fecha_siguiente_work = min(available_dates, key=lambda x: abs((x - fecha_siguiente).days))
+                    precios_siguiente = precios_df.loc[alive_isins, fecha_siguiente_work]
+            except (KeyError, IndexError):
+                portfolio_value[next_rebalance] = current_value
+                continue
             
-            if precios_siguiente.isna().all():
-                # Si no hay precios en la siguiente fecha, mantener valor
-                portfolio_value[rebalance_date] = current_value
+            # Filtrar bonos que tienen precios válidos en ambas fechas
+            precios_actual_clean = precios_actual.dropna()
+            precios_siguiente_clean = precios_siguiente.dropna()
+            bonos_validos = precios_actual_clean.index.intersection(precios_siguiente_clean.index)
+            
+            if len(bonos_validos) == 0:
+                # Si no hay bonos con precios válidos, mantener valor
+                portfolio_value[next_rebalance] = current_value
                 continue
             
             # Calcular retorno de la cartera
             portfolio_return = 0.0
-            days_held = (fecha_siguiente - fecha_actual).days
+            days_held = (fecha_siguiente_work - fecha_actual_work).days
+            if days_held <= 0:
+                # Si las fechas son iguales o inválidas, mantener valor
+                portfolio_value[next_rebalance] = current_value
+                continue
+            weight_per_bond_valid = 1.0 / len(bonos_validos) if len(bonos_validos) > 0 else 0.0
             
-            for isin in alive_isins:
+            for isin in bonos_validos:
                 # Buscar información del bono en el universo
                 bond_info = None
                 coupon_rate = 0
@@ -313,7 +344,7 @@ def backtest_equally_weighted_portfolio(
                         bond_info = universo_indexed.loc[isin]
                     elif 'ISIN' in universo_indexed.columns:
                         # Buscar por columna ISIN
-                        mask = universo_indexed['ISIN'] == isin
+                        mask = universo_indexed['ISIN'].astype(str) == str(isin)
                         if mask.any():
                             bond_info = universo_indexed[mask].iloc[0]
                 
@@ -326,21 +357,23 @@ def backtest_equally_weighted_portfolio(
                         freq = int(getattr(bond_info, 'Coupon Frequency', 1)) if hasattr(bond_info, 'Coupon Frequency') else 1
                 
                 # Obtener precios
-                precio_inicial = precios_actual.get(isin) if isinstance(precios_actual, pd.Series) else precios_actual.get(isin, None)
-                precio_final = precios_siguiente.get(isin) if isinstance(precios_siguiente, pd.Series) else precios_siguiente.get(isin, None)
+                precio_inicial = float(precios_actual_clean.loc[isin])
+                precio_final = float(precios_siguiente_clean.loc[isin])
                 
                 # Calcular retorno si tenemos ambos precios válidos
-                if pd.notna(precio_inicial) and pd.notna(precio_final) and precio_inicial > 0:
+                if precio_inicial > 0 and precio_final > 0:
                     bond_return = calculate_total_return(
-                        float(precio_inicial), float(precio_final), 
+                        precio_inicial, precio_final, 
                         float(coupon_rate), days_held, freq
                     )
-                    portfolio_return += weight_per_bond * bond_return
+                    # calculate_total_return devuelve porcentaje, convertir a decimal
+                    portfolio_return += weight_per_bond_valid * (bond_return / 100.0)
             
-            # Actualizar valor de la cartera
-            current_value = current_value * (1 + portfolio_return / 100.0)
-        
-        portfolio_value[rebalance_date] = current_value
+            # Actualizar valor de la cartera (portfolio_return ya está en decimal)
+            current_value = current_value * (1 + portfolio_return)
+            
+            # Guardar valor actualizado en la siguiente fecha de rebalanceo
+            portfolio_value[next_rebalance] = current_value
     
     # Preparar resultados del benchmark
     if benchmark_col in precios_varios_df.columns:
@@ -348,18 +381,20 @@ def backtest_equally_weighted_portfolio(
         # Normalizar benchmark a 100 en la fecha de inicio
         if fecha_inicio in benchmark_series.index:
             benchmark_value = (benchmark_series / benchmark_series.loc[fecha_inicio]) * initial_value
-            benchmark_returns = benchmark_value.pct_change() * 100
         else:
             # Encontrar fecha más cercana
             closest_date = benchmark_series.index[benchmark_series.index >= fecha_inicio][0] if len(benchmark_series.index[benchmark_series.index >= fecha_inicio]) > 0 else benchmark_series.index[0]
             benchmark_value = (benchmark_series / benchmark_series.loc[closest_date]) * initial_value
-            benchmark_returns = benchmark_value.pct_change() * 100
+        
+        # Filtrar benchmark solo a fechas de rebalanceo para comparación justa
+        benchmark_value_rebalance = benchmark_value.reindex(rebalance_dates, method='ffill')
+        benchmark_returns = benchmark_value_rebalance.pct_change()  # En decimal, no porcentaje
     else:
         benchmark_value = pd.Series(dtype=float)
         benchmark_returns = pd.Series(dtype=float)
     
-    # Calcular retornos de la cartera
-    portfolio_returns = portfolio_value.pct_change() * 100
+    # Calcular retornos de la cartera (en decimal, no porcentaje)
+    portfolio_returns = portfolio_value.pct_change()
     
     # Preparar DataFrame de posiciones
     positions_df = pd.DataFrame(portfolio_holdings).T
@@ -407,25 +442,76 @@ def calculate_performance_metrics(
         return {}
     
     # Métricas básicas
-    portfolio_total_return = (port_ret_clean + 1).prod() - 1
-    benchmark_total_return = (bench_ret_clean + 1).prod() - 1
+    portfolio_total_return = (1 + port_ret_clean).prod() - 1
+    benchmark_total_return = (1 + bench_ret_clean).prod() - 1
     
-    portfolio_annual_return = ((1 + portfolio_total_return) ** (252 / len(port_ret_clean))) - 1
-    benchmark_annual_return = ((1 + benchmark_total_return) ** (252 / len(bench_ret_clean))) - 1
+    # Calcular retorno anualizado
+    # Determinar frecuencia basándose en el número de periodos y el rango de fechas
+    if len(port_ret_clean) > 1:
+        # Calcular días entre primer y último retorno
+        date_range = (port_ret_clean.index[-1] - port_ret_clean.index[0]).days
+        if date_range > 0:
+            periods_per_year_port = (len(port_ret_clean) - 1) * 365.25 / date_range
+        else:
+            periods_per_year_port = 12  # Default mensual
+        
+        # Para benchmark, puede tener más datos (diarios)
+        if len(bench_ret_clean) > 1:
+            date_range_bench = (bench_ret_clean.index[-1] - bench_ret_clean.index[0]).days
+            if date_range_bench > 0:
+                periods_per_year_bench = (len(bench_ret_clean) - 1) * 365.25 / date_range_bench
+            else:
+                periods_per_year_bench = 252  # Default diario
+        else:
+            periods_per_year_bench = 252
+        
+        portfolio_annual_return = ((1 + portfolio_total_return) ** (periods_per_year_port / len(port_ret_clean))) - 1
+        benchmark_annual_return = ((1 + benchmark_total_return) ** (periods_per_year_bench / len(bench_ret_clean))) - 1
+    else:
+        portfolio_annual_return = portfolio_total_return
+        benchmark_annual_return = benchmark_total_return
     
-    portfolio_volatility = port_ret_clean.std() * np.sqrt(252)
-    benchmark_volatility = bench_ret_clean.std() * np.sqrt(252)
+    # Volatilidad anualizada
+    if len(port_ret_clean) > 1:
+        date_range = (port_ret_clean.index[-1] - port_ret_clean.index[0]).days
+        if date_range > 0:
+            periods_per_year_port = (len(port_ret_clean) - 1) * 365.25 / date_range
+        else:
+            periods_per_year_port = 12
+    else:
+        periods_per_year_port = 12
+    
+    if len(bench_ret_clean) > 1:
+        date_range_bench = (bench_ret_clean.index[-1] - bench_ret_clean.index[0]).days
+        if date_range_bench > 0:
+            periods_per_year_bench = (len(bench_ret_clean) - 1) * 365.25 / date_range_bench
+        else:
+            periods_per_year_bench = 252
+    else:
+        periods_per_year_bench = 252
+    
+    portfolio_volatility = port_ret_clean.std() * np.sqrt(periods_per_year_port)
+    benchmark_volatility = bench_ret_clean.std() * np.sqrt(periods_per_year_bench)
     
     # Sharpe ratio (asumiendo risk-free = 0 por simplicidad)
     portfolio_sharpe = portfolio_annual_return / portfolio_volatility if portfolio_volatility > 0 else 0
     benchmark_sharpe = benchmark_annual_return / benchmark_volatility if benchmark_volatility > 0 else 0
     
-    # Tracking error
+    # Tracking error (anualizado)
     active_returns = port_ret_clean - bench_ret_clean
-    tracking_error = active_returns.std() * np.sqrt(252)
+    # Usar la frecuencia de la cartera para tracking error
+    if len(port_ret_clean) > 1:
+        date_range = (port_ret_clean.index[-1] - port_ret_clean.index[0]).days
+        if date_range > 0:
+            periods_per_year = (len(port_ret_clean) - 1) * 365.25 / date_range
+        else:
+            periods_per_year = 12
+    else:
+        periods_per_year = 12
+    tracking_error = active_returns.std() * np.sqrt(periods_per_year)
     
     # Information ratio
-    active_return_mean = active_returns.mean() * 252
+    active_return_mean = active_returns.mean() * periods_per_year
     information_ratio = active_return_mean / tracking_error if tracking_error > 0 else 0
     
     # Beta y Alpha

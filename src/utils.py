@@ -212,6 +212,17 @@ def load_historical_prices_universe(data_path: str) -> pd.DataFrame:
     # Establecer ISIN como índice
     precios_universo.set_index('Unnamed: 0', inplace=True)
     
+    # Limpiar ISINs: quitar " Corp" o cualquier sufijo similar del índice
+    def clean_isin(isin):
+        isin_str = str(isin)
+        if isin_str.endswith(' Corp'):
+            return isin_str[:-5]
+        elif isin_str.endswith(' Corp.'):
+            return isin_str[:-6]
+        return isin_str
+    
+    precios_universo.index = precios_universo.index.map(clean_isin)
+    
     # Reemplazar #N/D con NaN
     precios_universo = precios_universo.replace('#N/D', pd.NA)
     
