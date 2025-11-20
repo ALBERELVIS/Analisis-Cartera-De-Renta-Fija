@@ -12,7 +12,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
+from scipy.optimize import minimize
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -553,4 +554,262 @@ def calculate_performance_metrics(
         'max_drawdown_portfolio': max_drawdown_port * 100,
         'max_drawdown_benchmark': max_drawdown_bench * 100
     }
+
+
+def build_optimized_portfolio(
+    universo_df: pd.DataFrame,
+    fecha_analisis: datetime,
+    max_bonds: int = 20,
+    max_duration: float = 3.0,
+    max_hy_exposure: float = 0.10,
+    min_outstanding: float = 500000000,
+    max_weight_per_bond: float = 0.10,
+    max_weight_per_issuer: float = 0.15,
+    exclude_subordinated: bool = True
+) -> Dict:
+    """
+    Construye una cartera optimizada según el mandato del punto 6.
+    
+    Parameters
+    ----------
+    universo_df : pd.DataFrame
+        DataFrame con información del universo de bonos
+    fecha_analisis : datetime
+        Fecha de análisis
+    max_bonds : int, default 20
+        Número máximo de bonos en la cartera
+    max_duration : float, default 3.0
+        Duración máxima de la cartera (años)
+    max_hy_exposure : float, default 0.10
+        Exposición máxima a High Yield (10%)
+    min_outstanding : float, default 500000000
+        Tamaño mínimo de emisión (500M)
+    max_weight_per_bond : float, default 0.10
+        Peso máximo por emisión (10%)
+    max_weight_per_issuer : float, default 0.15
+        Peso máximo por emisor (15%)
+    exclude_subordinated : bool, default True
+        Si True, excluye deuda subordinada
+    
+    Returns
+    -------
+    dict
+        Diccionario con:
+        - 'weights': Series con pesos de cada bono
+        - 'portfolio_df': DataFrame con información de bonos seleccionados
+        - 'metrics': Diccionario con métricas de la cartera
+        - 'optimization_result': Resultado de la optimización
+    """
+    from analysis import HY_RATINGS
+    
+    # Crear copia del universo
+    universo = universo_df.copy()
+    
+    # 1. Filtrar bonos elegibles según restricciones básicas
+    print("="*70)
+    print("CONSTRUCCIÓN DE CARTERA OPTIMIZADA")
+    print("="*70)
+    print(f"\nFecha de análisis: {fecha_analisis}")
+    print(f"Bonos en universo inicial: {len(universo)}")
+    
+    # Filtrar por tamaño mínimo (Outstanding Amount > 500M)
+    if 'Outstanding Amount' in universo.columns:
+        outstanding = pd.to_numeric(universo['Outstanding Amount'], errors='coerce')
+        universo = universo[outstanding > min_outstanding].copy()
+        print(f"Después de filtrar por tamaño > {min_outstanding/1e6:.0f}M: {len(universo)} bonos")
+    
+    # Filtrar deuda subordinada
+    if exclude_subordinated and 'Seniority' in universo.columns:
+        universo = universo[~universo['Seniority'].str.contains('Subordinated', case=False, na=False)].copy()
+        print(f"Después de excluir subordinada: {len(universo)} bonos")
+    
+    # Filtrar bonos que tienen métricas necesarias
+    required_cols = ['YTM', 'Modified_Duration', 'Rating', 'Issuer', 'Price']
+    missing_cols = [col for col in required_cols if col not in universo.columns]
+    if missing_cols:
+        print(f"[WARNING] Advertencia: Faltan columnas necesarias: {missing_cols}")
+        print("   Asegurate de haber ejecutado las celdas anteriores (valoracion, metricas)")
+        return {}
+    
+    # Filtrar bonos con métricas válidas
+    universo = universo[
+        universo['YTM'].notna() & 
+        universo['Modified_Duration'].notna() & 
+        universo['Price'].notna() &
+        (universo['Price'] > 0)
+    ].copy()
+    print(f"Despues de filtrar por metricas validas: {len(universo)} bonos")
+    
+    if len(universo) == 0:
+        print("[ERROR] Error: No hay bonos elegibles despues de aplicar filtros")
+        return {}
+    
+    # Identificar bonos HY
+    universo['Is_HY'] = universo['Rating'].isin(HY_RATINGS) if 'Rating' in universo.columns else False
+    
+    # Pre-filtrar: tomar solo los mejores candidatos para acelerar optimización
+    # Ordenar por YTM y tomar top 3*max_bonds para tener opciones pero reducir complejidad
+    universo_sorted = universo.sort_values('YTM', ascending=False)
+    n_candidates = min(3 * max_bonds, len(universo_sorted))
+    universo_candidates = universo_sorted.head(n_candidates).copy()
+    
+    print(f"Pre-filtrado: {n_candidates} candidatos seleccionados (top por YTM)")
+    
+    # Preparar datos para optimización
+    n_bonds = len(universo_candidates)
+    ytm_values = universo_candidates['YTM'].values  # Maximizar YTM
+    durations = universo_candidates['Modified_Duration'].values
+    is_hy = universo_candidates['Is_HY'].values.astype(float)
+    issuers = universo_candidates['Issuer'].values if 'Issuer' in universo_candidates.columns else np.arange(n_bonds)
+    
+    # Función objetivo: maximizar YTM (minimizar negativo)
+    def objective(weights):
+        return -np.dot(weights, ytm_values)
+    
+    # Restricciones
+    constraints = []
+    
+    # 1. Suma de pesos = 1
+    constraints.append({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
+    
+    # 2. Duración <= max_duration (con pequeña tolerancia para evitar problemas numéricos)
+    constraints.append({
+        'type': 'ineq',
+        'fun': lambda w: (max_duration - 0.01) - np.dot(w, durations)  # -0.01 para margen de seguridad
+    })
+    
+    # 3. Exposición HY <= max_hy_exposure
+    constraints.append({
+        'type': 'ineq',
+        'fun': lambda w: max_hy_exposure - np.dot(w, is_hy)
+    })
+    
+    # 4. Peso máximo por bono <= max_weight_per_bond (usar bounds en lugar de restricciones)
+    # Esto es más eficiente que crear una restricción por bono
+    
+    # 5. Peso máximo por emisor <= max_weight_per_issuer
+    unique_issuers = np.unique(issuers)
+    for issuer in unique_issuers:
+        issuer_mask = (issuers == issuer)
+        constraints.append({
+            'type': 'ineq',
+            'fun': lambda w, mask=issuer_mask: max_weight_per_issuer - np.sum(w[mask])
+        })
+    
+    # Límites: pesos entre 0 y max_weight_per_bond (esto ya incluye la restricción 4)
+    bounds = [(0, max_weight_per_bond) for _ in range(n_bonds)]
+    
+    # Punto inicial: equiponderado entre los top bonos por YTM
+    top_bonds = min(max_bonds, n_bonds)
+    initial_weights = np.zeros(n_bonds)
+    top_indices = np.argsort(ytm_values)[-top_bonds:]
+    initial_weights[top_indices] = 1.0 / top_bonds
+    
+    print(f"\nOptimizando cartera con {n_bonds} bonos elegibles...")
+    print(f"Restricciones:")
+    print(f"  - Máximo {max_bonds} bonos")
+    print(f"  - Duración <= {max_duration} años")
+    print(f"  - Exposición HY <= {max_hy_exposure*100:.0f}%")
+    print(f"  - Peso máximo por bono: {max_weight_per_bond*100:.0f}%")
+    print(f"  - Peso máximo por emisor: {max_weight_per_issuer*100:.0f}%")
+    print(f"  - Total de restricciones: {len(constraints)}")
+    print(f"  - Emisores únicos: {len(unique_issuers)}")
+    
+    # Optimizar
+    try:
+        import time
+        start_time = time.time()
+        print(f"\n[LOG] Iniciando optimización...")
+        print(f"[LOG] Método: SLSQP")
+        print(f"[LOG] Iteraciones máximas: 500")
+        print(f"[LOG] Tolerancia: 1e-6")
+        
+        result = minimize(
+            objective,
+            initial_weights,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=constraints,
+            options={'maxiter': 500, 'ftol': 1e-6, 'disp': False}
+        )
+        
+        elapsed_time = time.time() - start_time
+        print(f"[LOG] Optimización completada en {elapsed_time:.2f} segundos")
+        print(f"[LOG] Iteraciones realizadas: {result.nit}")
+        print(f"[LOG] Evaluaciones de función: {result.nfev}")
+        print(f"[LOG] Éxito: {result.success}")
+        if not result.success:
+            print(f"[LOG] Mensaje: {result.message}")
+        
+        if not result.success:
+            print(f"[WARNING] Advertencia: La optimizacion no convergio: {result.message}")
+            # Usar solución encontrada de todas formas si tiene sentido
+            if np.sum(result.x) < 0.5:
+                print("[ERROR] Error: Los pesos optimizados no suman ~1")
+                print(f"[LOG] Suma de pesos: {np.sum(result.x):.6f}")
+                return {}
+        
+        weights = result.x
+        print(f"[LOG] Suma de pesos antes de normalizar: {np.sum(weights):.6f}")
+        weights = weights / np.sum(weights)  # Normalizar
+        print(f"[LOG] Suma de pesos después de normalizar: {np.sum(weights):.6f}")
+        
+        # Seleccionar solo bonos con peso > 0.001 (0.1%)
+        selected_mask = weights > 0.001
+        print(f"[LOG] Bonos con peso > 0.1%: {np.sum(selected_mask)}")
+        selected_weights = weights[selected_mask]
+        selected_weights = selected_weights / np.sum(selected_weights)  # Renormalizar
+        
+        selected_bonds = universo_candidates[selected_mask].copy()
+        selected_bonds['Weight'] = selected_weights
+        
+        # Ordenar por peso descendente
+        selected_bonds = selected_bonds.sort_values('Weight', ascending=False)
+        
+        print(f"\n[OK] Optimizacion completada")
+        print(f"  Bonos seleccionados: {len(selected_bonds)}")
+        print(f"  Peso total: {np.sum(selected_weights):.4f}")
+        
+        # Calcular métricas de la cartera
+        portfolio_duration = np.dot(selected_weights, selected_bonds['Modified_Duration'].values)
+        portfolio_ytm = np.dot(selected_weights, selected_bonds['YTM'].values)
+        portfolio_hy_exposure = np.dot(selected_weights, selected_bonds['Is_HY'].values)
+        
+        # Calcular concentración por emisor
+        issuer_weights = selected_bonds.groupby('Issuer')['Weight'].sum()
+        max_issuer_concentration = issuer_weights.max() if len(issuer_weights) > 0 else 0
+        
+        metrics = {
+            'num_bonds': len(selected_bonds),
+            'portfolio_ytm': portfolio_ytm,
+            'portfolio_duration': portfolio_duration,
+            'hy_exposure': portfolio_hy_exposure,
+            'max_issuer_concentration': max_issuer_concentration,
+            'max_bond_weight': selected_weights.max(),
+            'min_bond_weight': selected_weights.min()
+        }
+        
+        print(f"\nMétricas de la cartera:")
+        print(f"  YTM promedio: {portfolio_ytm*100:.2f}%")
+        print(f"  Duración: {portfolio_duration:.2f} años")
+        print(f"  Exposición HY: {portfolio_hy_exposure*100:.2f}%")
+        print(f"  Concentración máxima emisor: {max_issuer_concentration*100:.2f}%")
+        print(f"  Peso máximo bono: {selected_weights.max()*100:.2f}%")
+        print("="*70 + "\n")
+        
+        # Crear Series con pesos (solo bonos seleccionados)
+        weights_series = pd.Series(selected_weights, index=selected_bonds.index)
+        
+        return {
+            'weights': weights_series,
+            'portfolio_df': selected_bonds,
+            'metrics': metrics,
+            'optimization_result': result
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] Error en optimizacion: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
 
