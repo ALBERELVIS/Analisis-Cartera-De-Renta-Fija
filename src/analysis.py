@@ -13,6 +13,25 @@ import numpy as np
 from typing import Dict, Tuple
 
 
+def _normalize_callable_value(value):
+    """Devuelve valores booleanos consistentes para la columna Callable."""
+    if pd.isna(value):
+        return np.nan
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        try:
+            return bool(int(value))
+        except (ValueError, OverflowError):
+            return np.nan
+    value_str = str(value).strip().lower()
+    if value_str in {"y", "yes", "true", "1", "si", "sí"}:
+        return True
+    if value_str in {"n", "no", "false", "0"}:
+        return False
+    return np.nan
+
+
 # Definiciones de ratings
 IG_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-']
 HY_RATINGS = ['BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'C', 'D']
@@ -57,6 +76,7 @@ def analyze_currencies(df: pd.DataFrame, print_results: bool = True) -> Dict:
             pct = (count / len(df)) * 100
             print(f"  {ccy}: {count} bonos ({pct:.1f}%)")
         
+        '''
         print(f"\nConclusión:")
         if len(divisas) == 1:
             print(f"  El universo está compuesto exclusivamente por bonos en {divisas[0]}.")
@@ -65,6 +85,7 @@ def analyze_currencies(df: pd.DataFrame, print_results: bool = True) -> Dict:
             print(f"  El universo tiene exposición a {len(divisas)} divisas diferentes.")
             print(f"  Esto añade riesgo cambiario pero también diversificación.")
         print("="*60 + "\n")
+        '''
     
     return results
 
@@ -95,9 +116,11 @@ def analyze_bond_types(df: pd.DataFrame, print_results: bool = True) -> Dict:
     
     # Opcionalidad (Callable)
     if 'Callable' in df.columns:
-        callable_count = df['Callable'].value_counts()
-        results['callable'] = callable_count.to_dict()
-        results['callable_pct'] = (callable_count / len(df) * 100).to_dict()
+        callable_data = df['Callable'].apply(_normalize_callable_value).dropna()
+        if not callable_data.empty:
+            callable_count = callable_data.value_counts()
+            results['callable'] = callable_count.to_dict()
+            results['callable_pct'] = (callable_count / len(df) * 100).to_dict()
     
     # Seniority
     if 'Seniority' in df.columns:
