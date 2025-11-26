@@ -76,6 +76,16 @@ def analyze_currencies(df: pd.DataFrame, print_results: bool = True) -> Dict:
             pct = (count / len(df)) * 100
             print(f"  {ccy}: {count} bonos ({pct:.1f}%)")
         
+        '''
+        print(f"\nConclusión:")
+        if len(divisas) == 1:
+            print(f"  El universo está compuesto exclusivamente por bonos en {divisas[0]}.")
+            print(f"  No hay exposición a riesgo cambiario, pero tampoco hay diversificación en divisas.")
+        else:
+            print(f"  El universo tiene exposición a {len(divisas)} divisas diferentes.")
+            print(f"  Esto añade riesgo cambiario pero también diversificación.")
+        print("="*60 + "\n")
+        '''
     
     return results
 
@@ -166,6 +176,10 @@ def analyze_ratings(df: pd.DataFrame, print_results: bool = True) -> Dict:
     """
     Analiza los ratings y el riesgo de crédito del universo.
     
+    IMPORTANTE: Los bonos sin rating (NR) se tratan como High Yield (HY) 
+    para el análisis de riesgo, ya que la ausencia de rating implica 
+    mayor incertidumbre y requiere un tratamiento conservador.
+    
     Parameters
     ----------
     df : pd.DataFrame
@@ -185,9 +199,13 @@ def analyze_ratings(df: pd.DataFrame, print_results: bool = True) -> Dict:
     pd_1yr = df['PD 1YR'].mean() if 'PD 1YR' in df.columns else None
     
     # Clasificar en IG/HY
+    # NOTA: Los bonos NR (No Rated) se tratan como High Yield para análisis de riesgo
     ig_count = df[df['Rating'].isin(IG_RATINGS)].shape[0]
     hy_count = df[df['Rating'].isin(HY_RATINGS)].shape[0]
     nr_count = df[df['Rating'] == 'NR'].shape[0]
+    
+    # NR se trata como High Yield para el cálculo de exposición total a HY
+    hy_total_count = hy_count + nr_count  # Incluye NR como HY
     
     results = {
         'ratings_distribution': ratings.to_dict(),
@@ -197,6 +215,8 @@ def analyze_ratings(df: pd.DataFrame, print_results: bool = True) -> Dict:
         'hy_pct': hy_count / len(df) * 100,
         'nr_count': nr_count,
         'nr_pct': nr_count / len(df) * 100,
+        'hy_total_count': hy_total_count,  # HY + NR (NR tratado como HY)
+        'hy_total_pct': hy_total_count / len(df) * 100,  # Porcentaje total incluyendo NR como HY
         'pd_1yr_mean': pd_1yr
     }
     
@@ -214,22 +234,29 @@ def analyze_ratings(df: pd.DataFrame, print_results: bool = True) -> Dict:
         print(f"  Investment Grade (IG): {ig_count} bonos ({results['ig_pct']:.1f}%)")
         print(f"  High Yield (HY): {hy_count} bonos ({results['hy_pct']:.1f}%)")
         print(f"  No Rated (NR): {nr_count} bonos ({results['nr_pct']:.1f}%)")
+        print(f"\n  NOTA IMPORTANTE: Los bonos NR se tratan como High Yield para el análisis de riesgo.")
+        print(f"  Exposición total a High Yield (HY + NR): {results['hy_total_count']} bonos ({results['hy_total_pct']:.1f}%)")
         
         if pd_1yr is not None:
             print(f"\n3. Probabilidad de Default (PD 1YR):")
             print(f"  PD 1YR media: {pd_1yr:.4f} ({pd_1yr*100:.2f}%)")
             
             if 'PD 1YR' in df.columns:
+                # Calcular PD para HY (sin NR) y para HY+NR (tratando NR como HY)
                 pd_hy = df[df['Rating'].isin(HY_RATINGS)]['PD 1YR'].mean()
+                pd_hy_nr = df[df['Rating'].isin(HY_RATINGS) | (df['Rating'] == 'NR')]['PD 1YR'].mean()
                 pd_ig = df[df['Rating'].isin(IG_RATINGS)]['PD 1YR'].mean()
                 if not pd.isna(pd_hy):
-                    print(f"  PD 1YR media HY: {pd_hy:.4f} ({pd_hy*100:.2f}%)")
+                    print(f"  PD 1YR media HY (solo bonos con rating HY): {pd_hy:.4f} ({pd_hy*100:.2f}%)")
+                if not pd.isna(pd_hy_nr):
+                    print(f"  PD 1YR media HY+NR (NR tratado como HY): {pd_hy_nr:.4f} ({pd_hy_nr*100:.2f}%)")
                 if not pd.isna(pd_ig):
                     print(f"  PD 1YR media IG: {pd_ig:.4f} ({pd_ig*100:.2f}%)")
         
         print(f"\nConclusión:")
         print(f"  - {'Alta' if results['ig_pct'] > 80 else 'Baja'} proporción de Investment Grade")
-        print(f"  - {'Alta' if results['hy_pct'] > 10 else 'Baja'} exposición a High Yield")
+        print(f"  - {'Alta' if results['hy_pct'] > 10 else 'Baja'} exposición a High Yield (solo bonos con rating HY)")
+        print(f"  - {'Alta' if results['hy_total_pct'] > 10 else 'Baja'} exposición total a High Yield (HY + NR, tratando NR como HY)")
         risk_level = 'BAJO' if results['ig_pct'] > 80 and (pd_1yr is None or pd_1yr < 0.001) else 'MODERADO' if pd_1yr is None or pd_1yr < 0.01 else 'ALTO'
         print(f"  - Riesgo de crédito: {risk_level}")
         print("="*60 + "\n")
