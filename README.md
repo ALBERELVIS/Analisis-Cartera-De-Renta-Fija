@@ -1,4 +1,9 @@
 # 📊 Análisis de Cartera de Renta Fija
+# Hecho por: 
+## Albert Martin
+## Rodolfo Villena Lapaz
+## Alejandro García-Caro Nombela
+
 
 ## 📋 Descripción del Proyecto
 
