@@ -36,6 +36,18 @@ def _normalize_callable_value(value):
 IG_RATINGS = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-']
 HY_RATINGS = ['BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'C', 'D']
 
+# Orden de ratings de Fitch (de mejor a peor)
+FITCH_RATING_ORDER = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-', 
+                      'BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'C', 'D', 'NR']
+
+def _get_rating_order(rating):
+    """Devuelve el orden numérico de un rating para ordenar (menor = mejor rating)."""
+    try:
+        return FITCH_RATING_ORDER.index(rating)
+    except ValueError:
+        # Si el rating no está en la lista, ponerlo al final
+        return len(FITCH_RATING_ORDER)
+
 
 def analyze_currencies(df: pd.DataFrame, print_results: bool = True) -> Dict:
     """
@@ -181,22 +193,42 @@ def analyze_ratings(df: pd.DataFrame, print_results: bool = True) -> Dict:
     if 'Rating' not in df.columns:
         raise ValueError("DataFrame debe incluir columna 'Rating'")
     
-    ratings = df['Rating'].value_counts(normalize=True) * 100
+    # Obtener distribución de ratings
+    ratings_counts = df['Rating'].value_counts()
+    ratings_pct = (ratings_counts / len(df)) * 100
+    
+    # Ordenar ratings según orden de Fitch (de mejor a peor)
+    # Crear un DataFrame temporal para ordenar
+    ratings_df = pd.DataFrame({
+        'rating': ratings_counts.index,
+        'count': ratings_counts.values
+    })
+    ratings_df['order'] = ratings_df['rating'].apply(_get_rating_order)
+    ratings_df = ratings_df.sort_values('order').reset_index(drop=True)
+    # Crear Series ordenada con el índice correcto
+    ratings_ordered = pd.Series(ratings_df['count'].values, index=ratings_df['rating'].values, name='count')
+    ratings_pct_ordered = (ratings_ordered / len(df)) * 100
+    
     pd_1yr = df['PD 1YR'].mean() if 'PD 1YR' in df.columns else None
     
-    # Clasificar en IG/HY
+    # Clasificar en IG/HY (NR se trata como High Yield)
     ig_count = df[df['Rating'].isin(IG_RATINGS)].shape[0]
     hy_count = df[df['Rating'].isin(HY_RATINGS)].shape[0]
     nr_count = df[df['Rating'] == 'NR'].shape[0]
+    # Total HY incluye NR
+    hy_total_count = hy_count + nr_count
+    hy_total_pct = hy_total_count / len(df) * 100
     
     results = {
-        'ratings_distribution': ratings.to_dict(),
+        'ratings_distribution': ratings_pct.to_dict(),
         'ig_count': ig_count,
         'ig_pct': ig_count / len(df) * 100,
         'hy_count': hy_count,
         'hy_pct': hy_count / len(df) * 100,
         'nr_count': nr_count,
         'nr_pct': nr_count / len(df) * 100,
+        'hy_total_count': hy_total_count,  # HY incluyendo NR
+        'hy_total_pct': hy_total_pct,
         'pd_1yr_mean': pd_1yr
     }
     
@@ -206,30 +238,41 @@ def analyze_ratings(df: pd.DataFrame, print_results: bool = True) -> Dict:
         print("="*60)
         
         print(f"\n1. Distribución por Rating:")
-        for rating, pct in ratings.head(15).items():
-            count = len(df[df['Rating'] == rating])
+        # Mostrar ordenados según Fitch (de mejor a peor)
+        for _, row in ratings_df.iterrows():
+            rating = row['rating']
+            count = row['count']
+            pct = (count / len(df)) * 100
             print(f"  {rating}: {count} bonos ({pct:.1f}%)")
         
         print(f"\n2. Clasificación Investment Grade vs High Yield:")
         print(f"  Investment Grade (IG): {ig_count} bonos ({results['ig_pct']:.1f}%)")
         print(f"  High Yield (HY): {hy_count} bonos ({results['hy_pct']:.1f}%)")
         print(f"  No Rated (NR): {nr_count} bonos ({results['nr_pct']:.1f}%)")
+        print(f"  High Yield Total (HY + NR): {hy_total_count} bonos ({hy_total_pct:.1f}%)")
         
         if pd_1yr is not None:
             print(f"\n3. Probabilidad de Default (PD 1YR):")
             print(f"  PD 1YR media: {pd_1yr:.4f} ({pd_1yr*100:.2f}%)")
             
             if 'PD 1YR' in df.columns:
+                # PD para HY (sin incluir NR si no tienen PD)
                 pd_hy = df[df['Rating'].isin(HY_RATINGS)]['PD 1YR'].mean()
                 pd_ig = df[df['Rating'].isin(IG_RATINGS)]['PD 1YR'].mean()
+                # PD para HY+NR (tratando NR como HY)
+                hy_nr_df = df[df['Rating'].isin(HY_RATINGS) | (df['Rating'] == 'NR')]
+                pd_hy_total = hy_nr_df['PD 1YR'].mean() if 'PD 1YR' in hy_nr_df.columns else None
+                
                 if not pd.isna(pd_hy):
                     print(f"  PD 1YR media HY: {pd_hy:.4f} ({pd_hy*100:.2f}%)")
                 if not pd.isna(pd_ig):
                     print(f"  PD 1YR media IG: {pd_ig:.4f} ({pd_ig*100:.2f}%)")
+                if pd_hy_total is not None and not pd.isna(pd_hy_total):
+                    print(f"  PD 1YR media HY+NR: {pd_hy_total:.4f} ({pd_hy_total*100:.2f}%)")
         
         print(f"\nConclusión:")
         print(f"  - {'Alta' if results['ig_pct'] > 80 else 'Baja'} proporción de Investment Grade")
-        print(f"  - {'Alta' if results['hy_pct'] > 10 else 'Baja'} exposición a High Yield")
+        print(f"  - {'Alta' if hy_total_pct > 10 else 'Baja'} exposición a High Yield (incluyendo NR)")
         risk_level = 'BAJO' if results['ig_pct'] > 80 and (pd_1yr is None or pd_1yr < 0.001) else 'MODERADO' if pd_1yr is None or pd_1yr < 0.01 else 'ALTO'
         print(f"  - Riesgo de crédito: {risk_level}")
         print("="*60 + "\n")
