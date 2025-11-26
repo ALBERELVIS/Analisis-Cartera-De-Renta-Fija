@@ -84,14 +84,38 @@ def get_alive_bonds_at_date(
     if 'ISIN' not in universo_copy.columns:
         universo_copy['ISIN'] = universo_copy.index.astype(str)
     
-    if get_effective_maturity is None:
+    # Asegurar que las fechas estén en formato datetime
+    if 'Maturity' in universo_copy.columns:
+        if not pd.api.types.is_datetime64_any_dtype(universo_copy['Maturity']):
+            universo_copy['Maturity'] = pd.to_datetime(universo_copy['Maturity'], format='%d/%m/%Y', errors='coerce')
+    if 'Next Call Date' in universo_copy.columns:
+        if not pd.api.types.is_datetime64_any_dtype(universo_copy['Next Call Date']):
+            universo_copy['Next Call Date'] = pd.to_datetime(universo_copy['Next Call Date'], format='%d/%m/%Y', errors='coerce')
+    
+    # Importar get_effective_maturity si no está disponible
+    try:
         from utils import get_effective_maturity
+    except ImportError:
+        # Si no se puede importar, usar una función simple
+        def get_effective_maturity(row):
+            call_flag = str(row.get('Callable', 'N')).upper()
+            call_date = row.get('Next Call Date')
+            maturity = row.get('Maturity')
+            
+            if call_flag == 'Y' and pd.notna(call_date):
+                return call_date if isinstance(call_date, pd.Timestamp) else pd.to_datetime(call_date, errors='coerce')
+            elif pd.notna(maturity):
+                return maturity if isinstance(maturity, pd.Timestamp) else pd.to_datetime(maturity, errors='coerce')
+            return None
     
     if 'Maturity' in universo_copy.columns:
         universo_copy['Effective Maturity'] = universo_copy.apply(
             lambda row: get_effective_maturity(row), axis=1
         )
-        bonos_vivos = universo_copy[universo_copy['Effective Maturity'] > fecha].copy()
+        # Filtrar solo bonos con Effective Maturity válida y mayor que fecha
+        mask = universo_copy['Effective Maturity'].notna()
+        mask = mask & (universo_copy['Effective Maturity'] > fecha)
+        bonos_vivos = universo_copy[mask].copy()
         
         if 'ISIN' in bonos_vivos.columns:
             bonos_vivos_isins = pd.Index([str(x) for x in bonos_vivos['ISIN'].dropna().unique()])

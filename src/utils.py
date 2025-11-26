@@ -103,14 +103,14 @@ def calculate_years_to_maturity(row: pd.Series, fecha_analisis: datetime) -> flo
         -------
         float
             Años hasta maturity (o NaN si no hay fecha válida)
-        """
-        if pd.notna(row.get('Callable')) and str(row.get('Callable')).upper() == 'Y':
+    """
+    if pd.notna(row.get('Callable')) and str(row.get('Callable')).upper() == 'Y':
         if pd.notna(row.get('Next Call Date')):
             eff_maturity = row['Next Call Date']
         else:
             eff_maturity = row['Maturity']
     else:
-            eff_maturity = row['Maturity']
+        eff_maturity = row['Maturity']
     
     if pd.isna(eff_maturity):
         return np.nan
