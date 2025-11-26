@@ -43,26 +43,20 @@ def get_discount_from_curve(curva_work: pd.DataFrame, t: float) -> float:
     tenors = curva_work['Tenor'].to_numpy()
     discounts = curva_work['Discount'].to_numpy()
 
-    # Extrapolación antes del primer tenor
     if t <= tenors[0]:
         return float(discounts[0])
     
-    # Extrapolación después del último tenor
     if t >= tenors[-1]:
         return float(discounts[-1])
 
-    # Interpolación entre tenors
     idx = np.searchsorted(tenors, t)
     t1, t2 = tenors[idx-1], tenors[idx]
     d1, d2 = discounts[idx-1], discounts[idx]
 
-    # Interpolación exponencial → log-lineal en DF
     if d1 <= 0 or d2 <= 0:
-        # Si hay factores de descuento no positivos, usar interpolación lineal
         w = (t - t1) / (t2 - t1)
         return float(d1 + w * (d2 - d1))
 
-    # Interpolación log-lineal
     logd1, logd2 = np.log(d1), np.log(d2)
     w = (t - t1) / (t2 - t1)
     return float(np.exp(logd1 + w * (logd2 - logd1)))
@@ -93,7 +87,6 @@ def generate_coupon_dates(
     list
         Lista de fechas de cupón futuras (ordenadas)
     """
-    # Obtener frecuencia de cupón
     try:
         freq = int(row["Coupon Frequency"])
         if freq <= 0:
@@ -103,14 +96,12 @@ def generate_coupon_dates(
 
     months_step = int(12 // freq) if freq > 0 else 12
 
-    # Obtener fecha de vencimiento efectiva
     if effective_maturity is None:
         effective_maturity = get_effective_maturity(row)
 
     if effective_maturity is None or pd.isna(effective_maturity):
         return []
 
-    # Generar fechas desde el vencimiento hacia atrás
     dates = []
     d = effective_maturity
     while d > fecha_analisis:
@@ -151,11 +142,8 @@ def calculate_accrued_interest(
     if not pay_dates:
         return 0.0
     
-    # Encontrar el último cupón pagado y el próximo
     next_coupon = pay_dates[0]
-    step_days = int(round(365 / freq))
     
-    # Buscar el último cupón pagado
     last_coupon = None
     for i, coupon_date in enumerate(pay_dates):
         if coupon_date <= fecha_analisis:
@@ -166,11 +154,9 @@ def calculate_accrued_interest(
                 last_coupon = pay_dates[i-1]
             break
     
-    # Si no hay último cupón, calcularlo desde el próximo
     if last_coupon is None:
         last_coupon = next_coupon - relativedelta(months=int(12/freq))
     
-    # Calcular días transcurridos
     days_since = max((fecha_analisis - last_coupon).days, 0)
     days_full = max((next_coupon - last_coupon).days, 1)
     accrual_factor = days_since / days_full
@@ -212,17 +198,14 @@ def valorar_bono(
     tuple
         (precio_limpio, cupón_corridido, precio_sucio)
     """
-    # Validar moneda (solo EUR)
     if row.get("Ccy", "").upper() != "EUR":
         return np.nan, np.nan, np.nan
 
-    # Obtener cupón anual (%)
     try:
         coup_rate = float(row["Coupon"])
     except (ValueError, TypeError, KeyError):
         return np.nan, np.nan, np.nan
 
-    # Obtener frecuencia
     try:
         freq = int(row["Coupon Frequency"])
         if freq <= 0:
@@ -230,43 +213,34 @@ def valorar_bono(
     except (ValueError, TypeError, KeyError):
         freq = 1
 
-    # Generar fechas de cupón
     pay_dates = generate_coupon_dates(row, fecha_analisis)
     if not pay_dates:
         return np.nan, np.nan, np.nan
 
-    # Cupón por periodo
     coupon_per_period = nominal * (coup_rate / 100.0) / freq
 
-    # Calcular precio sucio = suma de valores presentes
     dirty = 0.0
     for d in pay_dates:
-        # Calcular tiempo en años (ACT/365)
         t = (d - fecha_analisis).days / 365.0
         if t <= 0:
             continue
 
-        # Obtener factor de descuento
         df = get_discount_from_curve(curva_work, t)
 
-        # Aplicar spread de crédito si es necesario
         if spread_bps != 0.0:
             s = spread_bps / 10000.0
             df *= np.exp(-s * t)
 
-        # Calcular flujo de caja
         cf = coupon_per_period
-        if d == pay_dates[-1]:  # Último cupón incluye principal
+        if d == pay_dates[-1]:
             cf += nominal
 
         dirty += cf * df
 
-    # Calcular cupón corrido
     accrued = calculate_accrued_interest(
         coupon_per_period, pay_dates, fecha_analisis, freq
     )
     
-    # Precio limpio = precio sucio - cupón corrido
     clean = dirty - accrued
 
     return clean, accrued, dirty
@@ -303,27 +277,22 @@ def spread_implicito(
     """
     precio_mercado = row.get("Price")
     
-    # Validar precio de mercado
     if pd.isna(precio_mercado) or precio_mercado <= 0:
         return np.nan
 
-    # Función objetivo para fsolve
     def objetivo(spread_bps):
         precio_modelo, _, _ = valorar_bono(
             row, fecha_analisis, curva_work, 
             spread_bps=spread_bps[0], nominal=nominal
         )
         if pd.isna(precio_modelo):
-            return 1e6  # Penalización si no se puede valorar
+            return 1e6
         return precio_modelo - precio_mercado
 
     try:
-        # Resolver para encontrar el spread que iguala los precios
-        # Usamos un punto inicial razonable (100 bps)
         sol = fsolve(objetivo, x0=[100.0], xtol=tol, maxfev=100)
         spread = float(sol[0])
         
-        # Validar resultado razonable (entre -500 y 5000 bps)
         if -500 <= spread <= 5000:
             return spread
         else:

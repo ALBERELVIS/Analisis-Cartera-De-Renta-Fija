@@ -76,16 +76,6 @@ def analyze_currencies(df: pd.DataFrame, print_results: bool = True) -> Dict:
             pct = (count / len(df)) * 100
             print(f"  {ccy}: {count} bonos ({pct:.1f}%)")
         
-        '''
-        print(f"\nConclusión:")
-        if len(divisas) == 1:
-            print(f"  El universo está compuesto exclusivamente por bonos en {divisas[0]}.")
-            print(f"  No hay exposición a riesgo cambiario, pero tampoco hay diversificación en divisas.")
-        else:
-            print(f"  El universo tiene exposición a {len(divisas)} divisas diferentes.")
-            print(f"  Esto añade riesgo cambiario pero también diversificación.")
-        print("="*60 + "\n")
-        '''
     
     return results
 

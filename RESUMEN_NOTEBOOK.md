@@ -11,6 +11,10 @@
 8. [Punto 7: Cobertura de Tipos de Interés](#punto-7)
 9. [Punto 8: Cobertura de Riesgo de Crédito](#punto-8)
 10. [Punto 9: Estrategia Propia](#punto-9)
+11. [Estructura Técnica del Notebook](#estructura-técnica-del-notebook)
+12. [Notas Importantes](#notas-importantes)
+13. [Conclusión](#conclusión)
+14. [⭐ Mejoras y Funcionalidades Ejecutables](#mejoras-y-funcionalidades-ejecutables-)
 
 ---
 
@@ -381,7 +385,33 @@ Construir una cartera optimizada de máximo 20 bonos que maximice la rentabilida
    - Maximum Drawdown
    - Tracking Error vs benchmark
 
-**Código implementado**: Función `backtest_optimized_portfolio()` lista para usar
+**Código implementado**: Función `backtest_optimized_portfolio()` ⭐ **NUEVA FUNCIONALIDAD**
+
+**Características de la función**:
+- **Backtest completo con rebalanceo**: Re-optimiza la cartera en cada fecha de rebalanceo
+- **Cálculo automático de retornos**: Calcula retornos entre rebalanceos incluyendo cupones
+- **Métricas de rendimiento**: Calcula retorno total, anualizado, volatilidad
+- **Tracking completo**: Rastrea el valor de la cartera a lo largo del tiempo
+- **Manejo de bonos vivos**: Filtra automáticamente bonos vivos en cada fecha
+- **Re-optimización periódica**: Construye nueva cartera optimizada en cada rebalanceo
+
+**Parámetros configurables**:
+- Frecuencia de rebalanceo (mensual 'M' o trimestral 'Q')
+- Capital inicial
+- Fechas de inicio y fin
+- Aplica las mismas restricciones del mandato en cada rebalanceo
+
+**Uso**:
+```python
+resultado = backtest_optimized_portfolio(
+    precios_df=precios_historicos_universo,
+    universo_df=universo,
+    fecha_inicio=datetime(2023, 10, 1),
+    fecha_fin=datetime(2025, 9, 1),
+    rebalance_freq='M',
+    initial_capital=10_000_000
+)
+```
 
 ### Resultado
 - Cartera optimizada que cumple todas las restricciones
@@ -437,7 +467,23 @@ Ejemplo con Bobl (OE1):
 - **Subcobertura**: ¿Qué pasa si vendemos menos?
 - **Cobertura parcial**: Ejemplo de 40% (20 contratos en vez de 55)
 
-#### 7.6. Tabla Resumen
+#### 7.6. Código Ejecutable Dinámico ⭐ **NUEVO**
+**Funcionalidad implementada**:
+- **Cálculo automático de DV01**: Calcula dinámicamente la sensibilidad de la cartera basándose en la duración real
+- **Selección automática de instrumento**: Prioriza futuros con duración >= duración de la cartera
+- **Cálculo de contratos**: Calcula automáticamente el número óptimo de contratos necesarios
+- **Análisis de escenarios**: 
+  - Cobertura total (100%)
+  - Cobertura parcial (40% recomendada)
+  - Sobrecobertura (100 contratos para análisis)
+- **Tabla resumen comparativa**: Muestra diferentes estrategias de cobertura con sus impactos
+
+**Características del código**:
+- Se adapta automáticamente a la cartera optimizada construida en el punto 6
+- Verifica coherencia con la explicación teórica
+- Genera tablas y análisis detallados
+
+#### 7.7. Tabla Resumen
 El código genera una tabla comparativa mostrando:
 - Cobertura total vs parcial
 - DV01 cubierto y expuesto
@@ -445,8 +491,9 @@ El código genera una tabla comparativa mostrando:
 
 ### Resultado
 - Número exacto de contratos necesarios
-- Instrumento óptimo seleccionado
+- Instrumento óptimo seleccionado automáticamente
 - Análisis completo de estrategias de cobertura
+- **Código ejecutable que calcula todo dinámicamente** ⭐
 
 ---
 
@@ -487,7 +534,20 @@ Cubrir total o parcialmente el riesgo de crédito de la cartera usando índices 
 - **Razón**: Si spreads aumentan → bonos caen (pérdida) pero CDS sube (ganancia)
 - La posición long CDS compensa la pérdida en la cartera
 
-#### 8.5. Análisis de Niveles de Cobertura
+#### 8.5. Código Ejecutable Dinámico ⭐ **NUEVO**
+**Funcionalidad implementada**:
+- **Selección automática de índice CDS**: Selecciona ITRAXX Main o XOVER según exposición HY de la cartera
+- **Cálculo dinámico de notional**: Calcula automáticamente el notional necesario para cada nivel de cobertura
+- **Comparación de niveles**: Analiza múltiples niveles de cobertura (0%, 30%, 50%, 70%, 100%)
+- **Verificación de coherencia**: Verifica que la selección del índice coincide con la explicación teórica
+- **Tabla comparativa**: Genera tabla con todos los niveles de cobertura y sus características
+
+**Características del código**:
+- Se adapta automáticamente a la cartera optimizada
+- Determina dinámicamente si usar ITRAXX Main (IG) o XOVER (HY)
+- Calcula sensibilidad y notional para cada nivel de cobertura
+
+#### 8.6. Análisis de Niveles de Cobertura
 El código compara diferentes niveles:
 - 0% (sin cobertura)
 - 30% (cobertura ligera)
@@ -495,16 +555,17 @@ El código compara diferentes niveles:
 - 70% (cobertura alta)
 - 100% (cobertura total)
 
-#### 8.6. Instrumentos Alternativos
+#### 8.7. Instrumentos Alternativos
 - CDS single-name (cobertura idiosincrática)
 - ETF corporativos inversos
 - Venta de índices de crédito
 - Bonos gubernamentales (flight-to-quality)
 
 ### Resultado
-- Notional óptimo de cobertura
-- Índice CDS seleccionado
-- Análisis de diferentes estrategias
+- Notional óptimo de cobertura calculado automáticamente
+- Índice CDS seleccionado dinámicamente según perfil de la cartera
+- Análisis completo de diferentes estrategias
+- **Código ejecutable que calcula todo dinámicamente** ⭐
 
 ---
 
@@ -553,17 +614,34 @@ Diseñar una estrategia propia que combine coberturas parciales para gestionar e
 ✅ Reduce costes de cobertura vs. cobertura total
 ✅ Permite ajustes dinámicos según condiciones de mercado
 
-#### 9.4. Cálculo Dinámico
+#### 9.4. Código Ejecutable Dinámico ⭐ **NUEVO**
+**Funcionalidad implementada**:
+- **Cálculo automático de coberturas parciales combinadas**:
+  - Cobertura parcial de tipos (40%): Calcula automáticamente el número de contratos
+  - Cobertura parcial de crédito (50%): Calcula automáticamente el notional
+- **Análisis de riesgo residual**: Calcula la exposición restante después de las coberturas
+- **Verificación de coherencia**: Compara los cálculos dinámicos con la explicación teórica
+- **Resumen ejecutivo**: Genera un resumen completo de la estrategia con todos los parámetros
+
+**Características del código**:
+- Combina las coberturas de tipos y crédito
+- Verifica que la duración y exposición HY coinciden con lo esperado
+- Calcula DV01 cubierto y expuesto
+- Genera informe completo de la estrategia
+
+#### 9.5. Cálculo Dinámico
 El código calcula automáticamente:
 - Número de contratos para cobertura parcial de tipos
 - Notional para cobertura parcial de crédito
 - DV01 cubierto y expuesto
 - Verificación de coherencia con explicación teórica
+- **Todos los cálculos se hacen dinámicamente basándose en la cartera optimizada real** ⭐
 
 ### Resultado
 - Estrategia completa y justificada
-- Cálculos dinámicos basados en la cartera optimizada
+- Cálculos dinámicos basados en la cartera optimizada real
 - Plan de implementación y rebalanceo
+- **Código ejecutable completo que implementa toda la estrategia** ⭐
 
 ---
 
@@ -658,4 +736,67 @@ Este notebook proporciona un **análisis completo y profesional** de un universo
 - Backtesting de estrategias
 
 El notebook está **listo para uso profesional** y puede servir como base para análisis más avanzados o integración en sistemas de trading.
+
+---
+
+## 🚀 MEJORAS Y FUNCIONALIDADES EJECUTABLES ⭐
+
+### Novedades Añadidas
+
+Este notebook ha sido mejorado significativamente con **código ejecutable dinámico** para los puntos 6.5, 7, 8 y 9. A diferencia de la versión anterior que solo contenía descripciones teóricas, ahora incluye:
+
+#### 1. Backtest de Cartera Optimizada (Punto 6.5) ⭐
+- **Función completa**: `backtest_optimized_portfolio()`
+- **Capacidades**:
+  - Re-optimización automática en cada fecha de rebalanceo
+  - Cálculo de retornos con reinversión de cupones
+  - Tracking completo del valor de la cartera
+  - Métricas de rendimiento automáticas
+- **Ejecutable**: Solo necesitas descomentar y ejecutar el código
+
+#### 2. Cálculo Dinámico de Cobertura de Tipos (Punto 7) ⭐
+- **Cálculo automático de DV01**: Basado en la duración real de la cartera
+- **Selección inteligente de instrumento**: Prioriza futuros con duración >= cartera
+- **Análisis de escenarios**: 
+  - Cobertura total (100%)
+  - Cobertura parcial (40%)
+  - Análisis de sobrecobertura
+- **Tabla comparativa**: Genera automáticamente tablas de comparación
+
+#### 3. Cálculo Dinámico de Cobertura de Crédito (Punto 8) ⭐
+- **Selección automática de índice**: ITRAXX Main o XOVER según exposición HY
+- **Cálculo dinámico de notional**: Para diferentes niveles de cobertura
+- **Comparación de niveles**: 0%, 30%, 50%, 70%, 100%
+- **Verificación de coherencia**: Confirma que la selección coincide con la teoría
+
+#### 4. Estrategia Combinada Dinámica (Punto 9) ⭐
+- **Cálculo de coberturas parciales combinadas**:
+  - 40% cobertura de tipos de interés
+  - 50% cobertura de crédito
+- **Análisis de riesgo residual**: Calcula exposición restante
+- **Verificación completa**: Compara cálculos dinámicos con explicación teórica
+- **Resumen ejecutivo**: Genera informe completo de la estrategia
+
+### Ventajas de las Mejoras
+
+✅ **Código ejecutable**: Ya no es solo teoría, puedes ejecutarlo directamente
+✅ **Cálculos dinámicos**: Se adapta automáticamente a la cartera optimizada real
+✅ **Coherencia verificada**: Compara automáticamente con la explicación teórica
+✅ **Análisis completo**: Genera tablas y resúmenes automáticamente
+✅ **Listo para uso**: Solo descomenta y ejecuta
+
+### Archivos Nuevos
+
+- **RESUMEN_NOTEBOOK.md**: Documentación completa de todo el notebook (este archivo)
+- **TallerRF_AnálisisCartera_Enunciado.html**: Exportación HTML del notebook completo
+
+### Cómo Usar las Nuevas Funcionalidades
+
+1. **Ejecuta primero el punto 6.1** para construir la cartera optimizada
+2. **Para coberturas (Puntos 7, 8, 9)**: El código detecta automáticamente la cartera optimizada y calcula todo dinámicamente
+3. **Para backtest (Punto 6.5)**: Descomenta el código de ejemplo y ajusta las fechas según necesites
+
+---
+
+**Última actualización**: Noviembre 2025 - Merge de mejoras-hedging-backtest a main
 

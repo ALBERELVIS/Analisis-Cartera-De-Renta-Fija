@@ -69,15 +69,14 @@ def load_universe(data_path: str, fecha_analisis: datetime) -> pd.DataFrame:
             universo['Next Call Date'], format='%d/%m/%Y', errors='coerce'
         )
     
-    # Filtrar bonos vivos
-    vivos = universo[universo['Maturity'] > fecha_analisis].copy()
+    universo['Effective Maturity'] = universo.apply(
+        lambda row: get_effective_maturity(row), axis=1
+    )
+    vivos = universo[universo['Effective Maturity'] > fecha_analisis].copy()
     
-    # Calcular años a maturity (considerando callable)
     vivos['Años a maturity'] = vivos.apply(
         lambda row: calculate_years_to_maturity(row, fecha_analisis), axis=1
     )
-    
-    # Calcular Bid-Ask Spread
     if 'Bid Price' in vivos.columns and 'Ask Price' in vivos.columns:
         bid_price = pd.to_numeric(vivos['Bid Price'], errors='coerce')
         ask_price = pd.to_numeric(vivos['Ask Price'], errors='coerce')
@@ -100,25 +99,22 @@ def calculate_years_to_maturity(row: pd.Series, fecha_analisis: datetime) -> flo
     fecha_analisis : datetime
         Fecha de análisis
     
-    Returns
-    -------
-    float
-        Años hasta maturity (o NaN si no hay fecha válida)
-    """
-    # Si es callable y tiene Next Call Date, usar esa fecha
-    if pd.notna(row.get('Callable')) and str(row.get('Callable')).upper() == 'Y':
+        Returns
+        -------
+        float
+            Años hasta maturity (o NaN si no hay fecha válida)
+        """
+        if pd.notna(row.get('Callable')) and str(row.get('Callable')).upper() == 'Y':
         if pd.notna(row.get('Next Call Date')):
             eff_maturity = row['Next Call Date']
         else:
             eff_maturity = row['Maturity']
     else:
-        eff_maturity = row['Maturity']
+            eff_maturity = row['Maturity']
     
-    # Si no hay maturity válida, retornar NaN
     if pd.isna(eff_maturity):
         return np.nan
     
-    # Calcular años desde fecha_analisis
     return (eff_maturity - fecha_analisis).days / 365.25
 
 
@@ -140,7 +136,6 @@ def get_effective_maturity(row: pd.Series) -> Optional[pd.Timestamp]:
     call_date = row.get('Next Call Date')
     maturity = row.get('Maturity')
     
-    # Si es callable y tiene Next Call Date, usar esa fecha
     if call_flag == 'Y' and pd.notna(call_date):
         return call_date
     
@@ -163,27 +158,21 @@ def load_and_prepare_curve(data_path: str, fecha_analisis: datetime) -> pd.DataF
     pd.DataFrame
         DataFrame con la curva preparada (Tenor, Zero Rate, Discount)
     """
-    # Cargar curva
     curva = pd.read_csv(os.path.join(data_path, 'curvaESTR.csv'), sep=';')
     curva_work = curva.copy()
     
-    # Convertir fechas
     curva_work['Date'] = pd.to_datetime(curva_work['Date'], format='%d/%m/%Y', errors='coerce')
     curva_work = curva_work.dropna(subset=['Date'])
     
-    # Calcular tenors
     curva_work['Tenor'] = (curva_work['Date'] - fecha_analisis).dt.days / 365.25
     
-    # Normalizar Zero Rate (si está en porcentaje, convertir a decimal)
     if 'Zero Rate' in curva_work.columns:
         if curva_work['Zero Rate'].max() > 1:
             curva_work['Zero Rate'] /= 100
     
-    # Calcular factores de descuento si no existen
     if 'Discount' not in curva_work.columns or curva_work['Discount'].isna().any():
         curva_work['Discount'] = np.exp(-curva_work['Zero Rate'] * curva_work['Tenor'])
     
-    # Ordenar y seleccionar columnas relevantes
     curva_work = curva_work[['Tenor', 'Zero Rate', 'Discount']].sort_values('Tenor')
     
     return curva_work
@@ -209,10 +198,8 @@ def load_historical_prices_universe(data_path: str) -> pd.DataFrame:
         low_memory=False
     )
     
-    # Establecer ISIN como índice
     precios_universo.set_index('Unnamed: 0', inplace=True)
     
-    # Limpiar ISINs: quitar " Corp" o cualquier sufijo similar del índice
     def clean_isin(isin):
         isin_str = str(isin)
         if isin_str.endswith(' Corp'):
@@ -222,8 +209,6 @@ def load_historical_prices_universe(data_path: str) -> pd.DataFrame:
         return isin_str
     
     precios_universo.index = precios_universo.index.map(clean_isin)
-    
-    # Reemplazar #N/D con NaN
     precios_universo = precios_universo.replace('#N/D', pd.NA)
     
     return precios_universo
@@ -249,10 +234,7 @@ def load_historical_prices_various(data_path: str) -> pd.DataFrame:
         index_col=0
     )
     
-    # Convertir índice a datetime
     precios_varios.index = pd.to_datetime(precios_varios.index, format='%d/%m/%Y', errors='coerce')
-    
-    # Reemplazar #N/D y convertir a numérico
     precios_varios = precios_varios.replace('#N/D', pd.NA)
     precios_varios = precios_varios.apply(pd.to_numeric, errors='coerce')
     
